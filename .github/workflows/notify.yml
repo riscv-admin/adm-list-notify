@@ -65,7 +65,7 @@ jobs:
               Destination: { ToAddresses: [$to] },
               Content: { Simple: {
                 Subject: { Charset: "UTF-8",
-                  Data: ("GH Issue Opened #" + (.issue.number|tostring) + ": " +(.issue.title | gsub("[\r\n]+"; " ") | .[0:180])) },
+                  Data: ("[GITHUB ISSUE OPENED]: #" + (.issue.number|tostring) + ", " +(.issue.title | gsub("[\r\n]+"; " ") | .[0:180])) },
                 Body: {
                   Text: { Charset: "UTF-8", Data: (
                     .issue.title + "\n"

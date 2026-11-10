@@ -9,7 +9,7 @@ and the mailing list. RISC-V staff do the setup.
 ## What the list receives
 
 - **From:** `RISC-V GitHub` (shown by Groups.io as an *Integration* post)
-- **Subject:** `GH Issue Opened #<n>: <title>`
+- **Subject:** `[GITHUB ISSUE OPENED]: #<n>, <title>`
 - **Body:** the issue title (linked to the issue), one line `#<n> in <repo> by @<author>` (repo and author
   linked), then the issue text. HTML with a plain-text alternative; long text is truncated.
 - Only **newly opened issues**. Comments and edits stay on GitHub.
