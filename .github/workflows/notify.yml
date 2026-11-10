@@ -1,0 +1,87 @@
+# Reusable workflow: email a RISC-V Groups.io list when an issue is opened.
+#
+# Called from a small workflow in each group's repo (see templates/notify-list.yml).
+# The caller passes the list's Groups.io "Email Integration" address as the
+# secret `list_email`; the message is sent through Amazon SES from
+# noreply@riscv.org using a short-lived GitHub OIDC token (no stored AWS keys).
+# The role ARN comes from the organization secret LIST_NOTIFY_AWS_ROLE.
+#
+# Security notes:
+# - Issue title/body are untrusted. They are read from the event file with jq and
+#   passed to the AWS CLI as JSON data; they are never interpolated into shell code.
+# - The recipient must be an @lists.riscv.org address (also enforced by the IAM role).
+name: Notify list
+
+on:
+  workflow_call:
+    secrets:
+      list_email:
+        description: Groups.io Email Integration address of the target list
+        required: true
+      aws_role:
+        description: ARN of the AWS role adm-list-notify (org secret LIST_NOTIFY_AWS_ROLE)
+        required: true
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check the recipient
+        env:
+          TO: ${{ secrets.list_email }}
+        run: |
+          if [[ ! "$TO" =~ ^[A-Za-z0-9._+-]+@lists\.riscv\.org$ ]]; then
+            echo "::error::list_email must be an @lists.riscv.org address"
+            exit 1
+          fi
+
+      - name: Get AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.aws_role }}
+          aws-region: us-east-1
+
+      - name: Send the email
+        env:
+          TO: ${{ secrets.list_email }}
+        run: |
+          set -euo pipefail
+          ev="$GITHUB_EVENT_PATH"
+          if [[ "$(jq -r '.issue.number // empty' "$ev")" == "" ]]; then
+            echo "Not an issue event; nothing to send."
+            exit 0
+          fi
+          jq --arg to "$TO" '
+            def clip(n): if (. | length) > n then .[0:n] + "\n\n[... truncated, see the issue on GitHub]" else . end;
+            {
+              FromEmailAddress: "RISC-V GitHub <noreply@riscv.org>",
+              ConfigurationSetName: "adm-list-notify",
+              Destination: { ToAddresses: [$to] },
+              Content: { Simple: {
+                Subject: { Charset: "UTF-8",
+                  Data: ("GH Issue Opened #" + (.issue.number|tostring) + ": " +(.issue.title | gsub("[\r\n]+"; " ") | .[0:180])) },
+                Body: {
+                  Text: { Charset: "UTF-8", Data: (
+                    .issue.title + "\n"
+                    + "#" + (.issue.number|tostring) + " in " + .repository.name + " by @" + .issue.user.login + ": " + .issue.html_url + "\n\n"
+                    + ((.issue.body // "(no description)") | clip(20000)) + "\n\n"
+                    + "--\nSent automatically from GitHub. Please discuss on the issue.\n"
+                  ) },
+                  Html: { Charset: "UTF-8", Data: (
+                    "<p style=\"margin:0 0 4px 0\"><b><a href=\"" + (.issue.html_url|@html) + "\">" + (.issue.title|@html) + "</a></b></p>"
+                    + "<p style=\"margin:0 0 16px 0;color:#666\">#" + (.issue.number|tostring)
+                    + " in <a href=\"" + (.repository.html_url|@html) + "\">" + (.repository.name|@html) + "</a>"
+                    + " by <a href=\"" + (.issue.user.html_url|@html) + "\">@" + (.issue.user.login|@html) + "</a></p>"
+                    + "<div style=\"white-space:pre-wrap\">" + ((.issue.body // "(no description)") | clip(20000) | @html) + "</div>"
+                    + "<p style=\"margin-top:16px;color:#888;font-size:12px\">Sent automatically from GitHub. Please discuss on the issue.</p>"
+                  ) }
+                }
+              } }
+            }' "$ev" > "$RUNNER_TEMP/msg.json"
+          aws sesv2 send-email --cli-input-json "file://$RUNNER_TEMP/msg.json" --query MessageId --output text
