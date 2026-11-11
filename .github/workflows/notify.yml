@@ -1,4 +1,6 @@
-# Reusable workflow: email a RISC-V Groups.io list when an issue is opened.
+# Reusable workflow: email a RISC-V Groups.io list when an issue (and, if the
+# caller opts in, a pull request) is opened. Draft pull requests are skipped
+# until they are marked ready for review.
 #
 # Called from a small workflow in each group's repo (see templates/notify-list.yml).
 # The caller passes the list's Groups.io "Email Integration" address as the
@@ -7,8 +9,10 @@
 # The role ARN comes from the organization secret LIST_NOTIFY_AWS_ROLE.
 #
 # Security notes:
-# - Issue title/body are untrusted. They are read from the event file with jq and
+# - Issue/PR title and body are untrusted. They are read from the event file with jq and
 #   passed to the AWS CLI as JSON data; they are never interpolated into shell code.
+# - Callers use pull_request_target so fork PRs get the OIDC token. That is safe
+#   only because this workflow never checks out or runs code from the PR.
 # - The recipient must be an @lists.riscv.org address (also enforced by the IAM role).
 name: Notify list
 
@@ -53,33 +57,40 @@ jobs:
         run: |
           set -euo pipefail
           ev="$GITHUB_EVENT_PATH"
-          if [[ "$(jq -r '.issue.number // empty' "$ev")" == "" ]]; then
-            echo "Not an issue event; nothing to send."
+          kind="$(jq -r 'if .pull_request then "pr" elif .issue then "issue" else "" end' "$ev")"
+          if [[ -z "$kind" ]]; then
+            echo "Not an issue or pull request event; nothing to send."
+            exit 0
+          fi
+          if [[ "$kind" == pr && "$(jq -r '.pull_request.draft // false' "$ev")" == true ]]; then
+            echo "Draft pull request; nothing to send until it is marked ready for review."
             exit 0
           fi
           jq --arg to "$TO" '
-            def clip(n): if (. | length) > n then .[0:n] + "\n\n[... truncated, see the issue on GitHub]" else . end;
+            (.issue // .pull_request) as $it
+            | (if .pull_request then ["PR", "pull request"] else ["ISSUE", "issue"] end) as [$tag, $noun]
+            | def clip(n): if (. | length) > n then .[0:n] + "\n\n[... truncated, see the " + $noun + " on GitHub]" else . end;
             {
               FromEmailAddress: "RISC-V GitHub <noreply@riscv.org>",
               ConfigurationSetName: "adm-list-notify",
               Destination: { ToAddresses: [$to] },
               Content: { Simple: {
                 Subject: { Charset: "UTF-8",
-                  Data: ("[GITHUB ISSUE OPENED]: #" + (.issue.number|tostring) + ", " +(.issue.title | gsub("[\r\n]+"; " ") | .[0:180])) },
+                  Data: ("[GITHUB " + $tag + " OPENED]: #" + ($it.number|tostring) + ", " + ($it.title | gsub("[\r\n]+"; " ") | .[0:180])) },
                 Body: {
                   Text: { Charset: "UTF-8", Data: (
-                    .issue.title + "\n"
-                    + "#" + (.issue.number|tostring) + " in " + .repository.name + " by @" + .issue.user.login + ": " + .issue.html_url + "\n\n"
-                    + ((.issue.body // "(no description)") | clip(20000)) + "\n\n"
-                    + "--\nSent automatically from GitHub. Please discuss on the issue.\n"
+                    $it.title + "\n"
+                    + "#" + ($it.number|tostring) + " in " + .repository.name + " by @" + $it.user.login + ": " + $it.html_url + "\n\n"
+                    + (($it.body // "(no description)") | clip(20000)) + "\n\n"
+                    + "--\nSent automatically from GitHub. Please discuss on the " + $noun + ".\n"
                   ) },
                   Html: { Charset: "UTF-8", Data: (
-                    "<p style=\"margin:0 0 4px 0\"><b><a href=\"" + (.issue.html_url|@html) + "\">" + (.issue.title|@html) + "</a></b></p>"
-                    + "<p style=\"margin:0 0 16px 0;color:#666\">#" + (.issue.number|tostring)
+                    "<p style=\"margin:0 0 4px 0\"><b><a href=\"" + ($it.html_url|@html) + "\">" + ($it.title|@html) + "</a></b></p>"
+                    + "<p style=\"margin:0 0 16px 0;color:#666\">#" + ($it.number|tostring)
                     + " in <a href=\"" + (.repository.html_url|@html) + "\">" + (.repository.name|@html) + "</a>"
-                    + " by <a href=\"" + (.issue.user.html_url|@html) + "\">@" + (.issue.user.login|@html) + "</a></p>"
-                    + "<div style=\"white-space:pre-wrap\">" + ((.issue.body // "(no description)") | clip(20000) | @html) + "</div>"
-                    + "<p style=\"margin-top:16px;color:#888;font-size:12px\">Sent automatically from GitHub. Please discuss on the issue.</p>"
+                    + " by <a href=\"" + ($it.user.html_url|@html) + "\">@" + ($it.user.login|@html) + "</a></p>"
+                    + "<div style=\"white-space:pre-wrap\">" + (($it.body // "(no description)") | clip(20000) | @html) + "</div>"
+                    + "<p style=\"margin-top:16px;color:#888;font-size:12px\">Sent automatically from GitHub. Please discuss on the " + $noun + ".</p>"
                   ) }
                 }
               } }

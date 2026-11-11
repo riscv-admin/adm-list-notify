@@ -1,6 +1,7 @@
 # adm-list-notify
 
-Posts a message to a RISC-V Groups.io mailing list whenever a new issue is opened in a GitHub repository.
+Posts a message to a RISC-V Groups.io mailing list whenever a new issue (and, optionally, a new pull request)
+is opened in a GitHub repository.
 One shared workflow serves every group; each repository only needs a small caller file and one secret.
 
 **Want this for your group?** Email [help@riscv.org](mailto:help@riscv.org) with the GitHub repository
@@ -9,10 +10,11 @@ and the mailing list. RISC-V staff do the setup.
 ## What the list receives
 
 - **From:** `RISC-V GitHub` (shown by Groups.io as an *Integration* post)
-- **Subject:** `[GITHUB ISSUE OPENED]: #<n>, <title>`
-- **Body:** the issue title (linked to the issue), one line `#<n> in <repo> by @<author>` (repo and author
-  linked), then the issue text. HTML with a plain-text alternative; long text is truncated.
-- Only **newly opened issues**. Comments and edits stay on GitHub.
+- **Subject:** `[GITHUB ISSUE OPENED]: #<n>, <title>` or `[GITHUB PR OPENED]: #<n>, <title>`
+- **Body:** the issue or PR title (linked to GitHub), one line `#<n> in <repo> by @<author>` (repo and author
+  linked), then the issue or PR text. HTML with a plain-text alternative; long text is truncated.
+- Only **newly opened issues**, plus **newly opened pull requests** if the group asks for them. Draft PRs
+  are sent when they are marked ready for review. Comments, reviews and edits stay on GitHub.
 
 ## Architecture
 
@@ -66,7 +68,9 @@ sequenceDiagram
 - **No stored keys.** The workflow gets short-lived AWS credentials through GitHub's OIDC token.
 - **Least privilege.** The credentials can only send email from `noreply@riscv.org` to `@lists.riscv.org`
   addresses, and only RISC-V International workflows running this shared workflow can obtain them.
-- **Untrusted input.** Issue title and text are HTML-escaped and handled as data; they are never run as code.
+- **Untrusted input.** Issue and PR title and text are HTML-escaped and handled as data; they are never run as code.
+- **Pull requests.** The PR trigger is `pull_request_target`, so PRs from forks can send. The workflow never
+  checks out or runs code from the PR; it only reads the event's title and text.
 - **Secrets.** Each list's address is the repo secret `LIST_NOTIFY_EMAIL`; the AWS role is the organization
   secret `LIST_NOTIFY_AWS_ROLE`. The AWS configuration is kept privately by RISC-V staff.
 - **Change control.** `main` and the release tags are protected. Maintainer: Rafael Sene (@rpsene).
@@ -83,16 +87,20 @@ in riscv, riscv-non-isa, riscv-software-src and riscv-admin; for any other org, 
 2. **GitHub** (needs admin on the repo), from a clone of this repo:
 
    ```bash
-   ./onboard.sh <owner>/<repo> <integration-address>@lists.riscv.org
+   ./onboard.sh <owner>/<repo> <integration-address>@lists.riscv.org          # issues only
+   ./onboard.sh --prs <owner>/<repo> <integration-address>@lists.riscv.org    # issues and pull requests
    ```
 
-   This sets the repo secret `LIST_NOTIFY_EMAIL` and opens a PR adding `.github/workflows/notify-list.yml`.
+   This sets the repo secret `LIST_NOTIFY_EMAIL` and opens a PR adding `.github/workflows/notify-list.yml`
+   (from `templates/notify-list.yml` or `templates/notify-list-prs.yml`).
    Wait for the repo's checks and merge the PR.
 3. **Test:** open an issue titled `Test: notifications (please ignore)`, check that it reaches the list
-   (or the pending queue), then close the issue.
+   (or the pending queue), then close the issue. With `--prs`, do the same with a test pull request.
 4. Reply to the requester on the help@ ticket.
 
 To change the target list, re-run `onboard.sh` with the new address (it only updates the secret).
+To add pull requests to a repo that already sends issues, run `onboard.sh --prs` with the same address: it
+opens a PR that adds the `pull_request_target` trigger to the existing file.
 To stop notifications, delete `notify-list.yml` from the group's repo.
 
 ## Changing the shared workflow
